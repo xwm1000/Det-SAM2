@@ -1,14 +1,14 @@
 import os
 import psutil
 import subprocess  # TODO 开发过程中查看资源占用的包，后续应当删除
-from pympler import asizeof  # TODO 开发过程中查看资源占用的包，后续应当删除
+# from pympler import asizeof  # TODO 开发过程中查看资源占用的包，后续应当删除
 import cv2
 import sys
 import gc
 import time
 import torch
 from sam2.build_sam import build_sam2_video_predictor
-from frames2video import frames_to_video
+from .frames2video import frames_to_video
 from sam2.utils.misc import tensor_to_frame_rgb
 import ultralytics
 from IPython import display
@@ -211,17 +211,22 @@ class VideoProcessor:
         if self.detect_interval == -1:  # 如果detect_interval设置-1，则不进行检测推理
             return detection_results  # 返回空结果字典
 
+        # 添加调试信息
+        print(f"---开始检测: past_num_frames={past_num_frames}, buffer中有{len(images)}帧")
+        
         # 遍历frame_buffer中的帧，选择符合detect_interval的帧
         for i, image in enumerate(images):
             # 计算每帧在视频中的绝对索引
             frame_idx = past_num_frames + i  # past_num_frames + 1 = 开始时本次预测第N帧，past_num_frames + 1 - 1 = 开始时本次预测的帧索引（从0开始）。
 
             # 如果该帧符合detect_interval间隔检测频率，选择该帧并将其转回原始cv2读取到的bgr格式
-            if frame_idx % self.detect_interval == 0:
+            if frame_idx % self.detect_interval == 0 or (frame_idx == 0 and past_num_frames == 0):
                 selected_frames.append(cv2.cvtColor(image, cv2.COLOR_RGB2BGR))  # 需要进行检测推理的帧
                 absolute_indices.append(frame_idx)  # 需要进行检测推理的帧的绝对索引
+                print(f"   选中检测帧: frame_{frame_idx}")
 
         if len(selected_frames) == 0:  # 如果该次累积帧中不存在需要检测的帧
+            print(f"   本轮没有需要检测的帧")
             return detection_results  # 返回空结果字典
 
         # 推理selected_frames一个列表的图像
@@ -242,6 +247,11 @@ class VideoProcessor:
                         "class": cls,
                         "confidence": conf
                     })
+                    # 添加调试信息：显示检测到的物体类别名称
+                    class_id = int(cls[0]) if isinstance(cls, np.ndarray) else int(cls)
+                    conf_value = float(conf[0]) if isinstance(conf, np.ndarray) else float(conf)
+                    class_name = self.detect_model.names.get(class_id, "Unknown")
+                    print(f"   检测到: {class_name} (ID: {class_id}), 置信度: {conf_value:.2f}, 帧: {absolute_indices[i]}")
                     # print(f"帧索引(不包含预加载){absolute_indices[i]-self.pre_frames}: 坐标: {coords}, 类别: {cls}, 置信度: {conf}")
 
                 # 保证收集到的特殊类被检测结果为最大情况
@@ -273,6 +283,9 @@ class VideoProcessor:
             # print(f"---detection_results_json字典为空，本轮累积的视频流长度中没有条件帧")
             return self.inference_state
 
+        # 添加标志来跟踪是否有有效的检测结果
+        has_valid_detections = False
+
         # 遍历每一帧的检测结果
         for frame_idx, detections in detection_results_json.items():
             ann_frame_idx = int(frame_idx.replace('frame_', ''))  # 获取帧索引
@@ -290,6 +303,8 @@ class VideoProcessor:
                 obj_class = int(detection['class'][0]) if isinstance(detection['class'], np.ndarray) else int(detection['class'])
                 # 检查对象类别是否在跳过的类别中
                 if obj_class in self.skip_classes:
+                    class_name = self.detect_model.names.get(obj_class, "Unknown")
+                    print(f"   跳过类别: {class_name} (ID: {obj_class}) 在帧 {ann_frame_idx}")
                     continue  # 跳过当前检测结果，继续处理下一个
 
                 box = detection['coordinates']
@@ -300,6 +315,9 @@ class VideoProcessor:
                     obj_id=obj_class,  # 使用对象类作为 ID
                     box=np.array(box, dtype=np.float32),
                 )
+                
+                # 标记有有效的检测结果
+                has_valid_detections = True
 
                 if self.visualize_prompt:  # 如果可视化交互帧
                     # 绘制检测框
@@ -312,6 +330,10 @@ class VideoProcessor:
                 save_path = os.path.join("temp_output/prompt_results", f"frame_{ann_frame_idx}.png")
                 plt.savefig(save_path)
                 plt.close()  # 关闭图形以释放内存
+
+        # 如果没有有效的检测结果，打印提示信息
+        if not has_valid_detections:
+            print(f"---警告：在帧 {list(detection_results_json.keys())} 中没有检测到有效对象（所有对象都被跳过或没有检测到对象）")
 
         return self.inference_state
 
@@ -383,6 +405,15 @@ class VideoProcessor:
                 print("---无法在线添加新出现的物体ID, 正在reset_state")
                 self.predictor.reset_state(self.inference_state)
                 self.inference_state = self.Detect_2_SAM2_Prompt(detection_results_json)
+
+        # 检查是否有任何对象被添加到 inference_state
+        # 如果 obj_ids 为空，说明没有有效的检测结果，跳过传播
+        if not self.inference_state.get("obj_ids", []):
+            # print("---没有检测到有效对象，跳过传播")
+            return
+        
+        # 打印当前正在跟踪的物体
+        print(f"   当前跟踪的物体IDs: {self.inference_state.get('obj_ids', [])}")
 
         # 执行追踪推理（传播操作）
         for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(

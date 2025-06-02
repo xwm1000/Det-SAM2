@@ -1,0 +1,8 @@
+/factory/realtime_output/
+/factory/wuliaohe_best.pt
+/factory/data/
+/checkpoints/sam2.1_hiera_base_plus.pt
+/checkpoints/sam2.1_hiera_large.pt
+/checkpoints/sam2.1_hiera_small.pt
+/checkpoints/sam2.1_hiera_tiny.pt
+/checkpoints/wuliohebest-yolov8.pt

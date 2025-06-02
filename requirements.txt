@@ -122,13 +122,13 @@ tensorboard-data-server==0.7.2
 terminado==0.18.0
 tinycss2==1.2.1
 tomli==2.0.1
-torch==2.3.1+cu121
-torchaudio==2.3.1+cu121
-torchvision==0.18.1+cu121
+#torch==2.3.1+cu121
+#torchaudio==2.3.1+cu121
+#torchvision==0.18.1+cu121
 tornado==6.4
 tqdm==4.66.5
 traitlets==5.14.1
-triton==2.3.1
+#triton==2.3.1
 typing_extensions==4.9.0
 tzdata==2024.1
 ultralytics==8.2.82

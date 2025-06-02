@@ -11,9 +11,9 @@ from readerwriterlock import rwlock
 from tqdm import tqdm
 
 from sam2.utils.misc import tensor_to_frame_rgb
-from frames2video import frames_to_video
-from det_sam2_RT import VideoProcessor
-from postprocess_det_sam2 import VideoPostProcessor
+from .frames2video import frames_to_video
+from .det_sam2_RT import VideoProcessor
+from .postprocess_det_sam2 import VideoPostProcessor
 
 class DetSAM2Pipeline:
     def __init__(
@@ -92,85 +92,91 @@ class DetSAM2Pipeline:
 
         # 第一个线程：预加载内存库和视频推理
         def process_video():
-            # 1.Det-SAM2-预加载内存库
-            if self.video_processor.load_inference_state_path is not None:  # 如果加载内存库路径不为空，则预加载指定内存库
-                self.video_processor.inference_state = self.video_processor.load_inference_state(self.video_processor.load_inference_state_path)
+            try:
+                # 1.Det-SAM2-预加载内存库
+                if self.video_processor.load_inference_state_path is not None:  # 如果加载内存库路径不为空，则预加载指定内存库
+                    self.video_processor.inference_state = self.video_processor.load_inference_state(self.video_processor.load_inference_state_path)
 
-                # 获取预加载内存库中条件帧和非条件帧索引，并保存记录在inference_state字典的"preloading_memory_cond_frame_idx"和"preloading_memory_non_cond_frames_idx"中
-                preloading_memory_cond_frame_idx = list(self.video_processor.inference_state["output_dict"]["cond_frame_outputs"].keys())
-                preloading_memory_non_cond_frames_idx = list(self.video_processor.inference_state["output_dict"]["non_cond_frame_outputs"].keys())
+                    # 获取预加载内存库中条件帧和非条件帧索引，并保存记录在inference_state字典的"preloading_memory_cond_frame_idx"和"preloading_memory_non_cond_frames_idx"中
+                    preloading_memory_cond_frame_idx = list(self.video_processor.inference_state["output_dict"]["cond_frame_outputs"].keys())
+                    preloading_memory_non_cond_frames_idx = list(self.video_processor.inference_state["output_dict"]["non_cond_frame_outputs"].keys())
 
-                self.video_processor.inference_state["preloading_memory_cond_frame_idx"] = preloading_memory_cond_frame_idx
-                self.video_processor.inference_state["preloading_memory_non_cond_frames_idx"] = preloading_memory_non_cond_frames_idx
-                # 获取预加载内存库的已有帧数，并更新self.pre_frames,同时保存在inference_state["preloading_memory_frames"]中
-                self.video_processor.pre_frames = self.video_processor.inference_state["num_frames"]
-                self.video_processor.predictor.init_preloading_state(self.video_processor.inference_state) # 将预加载内存库中部分张量移动到CPU上
+                    self.video_processor.inference_state["preloading_memory_cond_frame_idx"] = preloading_memory_cond_frame_idx
+                    self.video_processor.inference_state["preloading_memory_non_cond_frames_idx"] = preloading_memory_non_cond_frames_idx
+                    # 获取预加载内存库的已有帧数，并更新self.pre_frames,同时保存在inference_state["preloading_memory_frames"]中
+                    self.video_processor.pre_frames = self.video_processor.inference_state["num_frames"]
+                    self.video_processor.predictor.init_preloading_state(self.video_processor.inference_state) # 将预加载内存库中部分张量移动到CPU上
 
-            # 2.Det-SAM2-实时推理主干读取视频流（在此不支持渲染中间结果）
-            if video_source is not None:
-                # 从视频文件加载视频流
-                cap = cv2.VideoCapture(video_source)   # TODO,是否可以控制视频流的帧率
-                if not cap.isOpened():
-                    print(f"无法读取视频: {video_source}")
-                    return
+                # 2.Det-SAM2-实时推理主干读取视频流（在此不支持渲染中间结果）
+                if video_source is not None:
+                    # 从视频文件加载视频流
+                    cap = cv2.VideoCapture(video_source)   # TODO,是否可以控制视频流的帧率
+                    if not cap.isOpened():
+                        print(f"无法读取视频: {video_source}")
+                        return
 
-                frame_idx = 0  # 初始化当前视频流的帧索引计数器
-                while frame_idx < max_frames:
-                    ret, frame = cap.read()
-                    if not ret:  # 视频结束, 将缓存中累积的剩余视频帧进行推理
-                        if self.video_processor.frame_buffer is not None and len(self.video_processor.frame_buffer) > 0:
-                            # print(f"视频结束推理剩余帧数: {len(self.video_processor.frame_buffer)}")
-                            self.video_processor.Detect_and_SAM2_inference(frame_idx=self.video_processor.pre_frames + frame_idx - 1)  # 最后一帧的索引，在循环中结束时注意需要-1
-                            self.transform_video_segments()  # 将self.video_processor.video_segments中的内容添加到self.video_segments中
-                        self.inference_done_event.set()  # 视频结束，标记推理完成
-                        break
-                    # 将BGR图像转换为RGB
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # shape = (1080, 1920, 3)
-                    self.video_processor.inference_state = self.video_processor.process_frame(self.video_processor.pre_frames + frame_idx, frame_rgb)
-                    self.transform_video_segments()  # 将self.video_processor.video_segments中的内容添加到self.video_segments中
+                    frame_idx = 0  # 初始化当前视频流的帧索引计数器
+                    while frame_idx < max_frames:
+                        ret, frame = cap.read()
+                        if not ret:  # 视频结束, 将缓存中累积的剩余视频帧进行推理
+                            if self.video_processor.frame_buffer is not None and len(self.video_processor.frame_buffer) > 0:
+                                # print(f"视频结束推理剩余帧数: {len(self.video_processor.frame_buffer)}")
+                                self.video_processor.Detect_and_SAM2_inference(frame_idx=self.video_processor.pre_frames + frame_idx - 1)  # 最后一帧的索引，在循环中结束时注意需要-1
+                                self.transform_video_segments()  # 将self.video_processor.video_segments中的内容添加到self.video_segments中
+                            self.inference_done_event.set()  # 视频结束，标记推理完成
+                            break
+                        # 将BGR图像转换为RGB
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # shape = (1080, 1920, 3)
+                        self.video_processor.inference_state = self.video_processor.process_frame(self.video_processor.pre_frames + frame_idx, frame_rgb)
+                        self.transform_video_segments()  # 将self.video_processor.video_segments中的内容添加到self.video_segments中
 
-                    # 检查是否启动过后处理进程
-                    if not self.post_processor_started:  # 确保后处理进程只会被启动一次
-                        # 检查特殊检测的触发条件
-                        if self.video_processor.special_classes_detection and not post_process_thread.is_alive():
-                            # 4.Det-SAM2-后处理确定袋口位置与桌面边界
-                            self.post_processor.get_hole_name(self.video_processor.special_classes_detection)  # 将袋口坐标分配給指定袋口
-                            self.post_processor.get_boundary_from_holes()  # # 根据袋口坐标计算桌面有效边界
-                            # 启动第二个线程（后处理）
-                            post_process_thread.start()
-                            self.post_processor_started = True # 标记后处理进程已启动
+                        # 检查是否启动过后处理进程
+                        if not self.post_processor_started:  # 确保后处理进程只会被启动一次
+                            # 检查特殊检测的触发条件
+                            if self.video_processor.special_classes_detection and not post_process_thread.is_alive():
+                                # 4.Det-SAM2-后处理确定袋口位置与桌面边界
+                                self.post_processor.get_hole_name(self.video_processor.special_classes_detection)  # 将袋口坐标分配給指定袋口
+                                self.post_processor.get_boundary_from_holes()  # # 根据袋口坐标计算桌面有效边界
+                                # 启动第二个线程（后处理）
+                                post_process_thread.start()
+                                self.post_processor_started = True # 标记后处理进程已启动
 
-                    frame_idx += 1
-                cap.release()
+                        frame_idx += 1
+                    cap.release()
 
-                # 在视频流中超出最大推理帧数时手动触发推理完成事件以终止后处理线程
-                if frame_idx >= max_frames:
-                    print(f"达到视频流处理最大帧max_frames={max_frames},终止视频流推理")
-                    self.inference_done_event.set()  # 达到最大帧数时，标记推理完成
+                    # 在视频流中超出最大推理帧数时手动触发推理完成事件以终止后处理线程
+                    if frame_idx >= max_frames:
+                        print(f"达到视频流处理最大帧max_frames={max_frames},终止视频流推理")
+                        self.inference_done_event.set()  # 达到最大帧数时，标记推理完成
 
-            # 3.Det-SAM2-渲染中间结果
-            if self.video_processor.vis_frame_stride == -1:
-                print("不对任何帧进行渲染,推理完成")
-            else:
-                # 首先清除self.output_dir文件夹下所有已有文件
-                for file in os.listdir(self.video_processor.output_dir):
-                    file_path = os.path.join(self.video_processor.output_dir, file)
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                # 统一渲染本次视频推理的所有帧
-                images_tensor = self.video_processor.inference_state["images"]
-                for i in tqdm(range(self.video_processor.pre_frames, images_tensor.shape[0]), desc="掩码可视化渲染进度"):  # 从预加载内存库后一帧开始渲染
-                    # print(f"准备渲染第{i}帧记忆库图像特征")
-                    if i % self.video_processor.vis_frame_stride == 0:  # i为本次推理视频帧的索引
-                        tensor_img = images_tensor[i:i + 1]  # 从inferenced_state["images"]中获取self.frames，用于渲染。维度为 (1, 3, 1024, 1024)
-                        frame_rgb = tensor_to_frame_rgb(tensor_img)  # 当前RGB帧的nd数组
-                        self.video_processor.render_frame(i, frame_rgb, self.video_segments)  # 根据结果字典渲染所需要的时包含预加载内存库的绝对索引，因此i+self.pre_frames
-                print(f"---按照每{self.video_processor.vis_frame_stride}帧间隔渲染,渲染结束")
-                frames_to_video(
-                    frames_folder=self.video_processor.output_dir,
-                    output_video_path='./temp_output/output_segment_video.mp4',
-                    fps=2
-                )
+                # 3.Det-SAM2-渲染中间结果
+                if self.video_processor.vis_frame_stride == -1:
+                    print("不对任何帧进行渲染,推理完成")
+                else:
+                    # 首先清除self.output_dir文件夹下所有已有文件
+                    for file in os.listdir(self.video_processor.output_dir):
+                        file_path = os.path.join(self.video_processor.output_dir, file)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                    # 统一渲染本次视频推理的所有帧
+                    images_tensor = self.video_processor.inference_state["images"]
+                    for i in tqdm(range(self.video_processor.pre_frames, images_tensor.shape[0]), desc="掩码可视化渲染进度"):  # 从预加载内存库后一帧开始渲染
+                        # print(f"准备渲染第{i}帧记忆库图像特征")
+                        if i % self.video_processor.vis_frame_stride == 0:  # i为本次推理视频帧的索引
+                            tensor_img = images_tensor[i:i + 1]  # 从inferenced_state["images"]中获取self.frames，用于渲染。维度为 (1, 3, 1024, 1024)
+                            frame_rgb = tensor_to_frame_rgb(tensor_img)  # 当前RGB帧的nd数组
+                            self.video_processor.render_frame(i, frame_rgb, self.video_segments)  # 根据结果字典渲染所需要的时包含预加载内存库的绝对索引，因此i+self.pre_frames
+                    print(f"---按照每{self.video_processor.vis_frame_stride}帧间隔渲染,渲染结束")
+                    frames_to_video(
+                        frames_folder=self.video_processor.output_dir,
+                        output_video_path='./temp_output/output_segment_video.mp4',
+                        fps=2
+                    )
+            except Exception as e:
+                print(f"视频处理线程发生错误: {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                self.inference_done_event.set()  # 确保后处理线程能够退出
 
         # 第二个线程：后处理
         def post_process():
